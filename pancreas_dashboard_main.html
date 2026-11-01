@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pancreas Twin Dashboard</title>
+<!--
+  ============================================================
+  ARTIFICIAL PANCREAS DASHBOARD  (Step 1: live view + logging)
+  ------------------------------------------------------------
+  HOW TO USE
+  1. Open this file in Google Chrome (or Microsoft Edge).
+     Safari does NOT support USB serial.
+  2. CLOSE the Arduino IDE's Serial Monitor first
+     (only one program can talk to the Arduino at a time).
+  3. Click "Connect Arduino" and pick the usbmodem port.
+  Works with the BASIC sketch exactly as it is - it reads the
+  same text lines you see in the Serial Monitor.
+  ============================================================
+-->
+<style>
+  :root{
+    --bg:#f4f5f7; --card:#ffffff; --ink:#1d2330; --muted:#667085; --line:#e3e6ea;
+    --blue:#2563eb; --green:#15803d; --red:#dc2626; --orange:#ea580c; --purple:#7c3aed;
+    --band:rgba(21,128,61,.08);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0f1218; --card:#171b23; --ink:#e7eaf0; --muted:#98a2b3; --line:#2a303b;
+      --blue:#60a5fa; --green:#4ade80; --red:#f87171; --orange:#fb923c; --purple:#a78bfa;
+      --band:rgba(74,222,128,.08);
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--card)}
+  header h1{font-size:18px;margin:0}
+  header .sub{color:var(--muted);font-size:13px}
+  main{padding:16px 20px;display:grid;gap:16px;grid-template-columns:minmax(0,1fr) 320px;max-width:1500px;margin:0 auto}
+  @media (max-width:980px){main{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0 0 10px}
+  button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:8px 12px;cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--blue)}
+  button.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+  button.meal{background:var(--purple);border-color:var(--purple);color:#fff;font-weight:600}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  input[type=text],input[type=number]{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
+  input[type=number]{width:80px}
+  label.small{font-size:13px;color:var(--muted);display:flex;gap:6px;align-items:center}
+  #status{font-size:22px;font-weight:700;padding:14px;border-radius:10px;text-align:center;background:var(--bg)}
+  #status.ok{color:var(--green)} #status.spike{color:var(--red)} #status.mix{color:var(--orange)} #status.wait{color:var(--muted)}
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .stat{background:var(--bg);border-radius:8px;padding:8px 10px}
+  .stat .k{font-size:12px;color:var(--muted)} .stat .v{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
+  #chartWrap{position:relative;height:440px}
+  canvas#chart{width:100%;height:100%;display:block}
+  #log{height:220px;overflow:auto;font:12px/1.5 ui-monospace,Menlo,monospace;background:var(--bg);border-radius:8px;padding:8px;white-space:pre-wrap}
+  #events{list-style:none;margin:0;padding:0;max-height:220px;overflow:auto;font-size:13px}
+  #events li{padding:4px 0;border-bottom:1px solid var(--line)}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}
+  .conn-on{background:rgba(21,128,61,.15);color:var(--green)} .conn-off{background:rgba(220,38,38,.12);color:var(--red)}
+  #warn{display:none;background:rgba(220,38,38,.1);color:var(--red);padding:10px 14px;border-radius:8px;margin:12px 20px 0}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12px;color:var(--muted);margin-top:8px}
+  .legend span::before{content:"";display:inline-block;width:14px;height:3px;margin-right:6px;vertical-align:middle;background:var(--c)}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Artificial Pancreas Dashboard</h1>
+    <div class="sub">Tub A "bloodstream" · live pH-sensor reading, doses and time in range</div>
+  </div>
+  <div class="row">
+    <span id="conn" class="pill conn-off">Not connected</span>
+    <button id="btnConnect" class="primary">Connect Arduino</button>
+    <button id="btnDisconnect" disabled>Disconnect</button>
+  </div>
+</header>
+<div id="warn"></div>
+
+<main>
+  <section style="display:grid;gap:16px;min-width:0">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h2 id="chartTitle" style="margin:0">Live reading</h2>
+        <div class="row">
+          <button id="btnPng">Save chart (PNG)</button>
+        </div>
+      </div>
+      <div id="chartWrap"><canvas id="chart"></canvas></div>
+      <div class="legend">
+        <span style="--c:var(--blue)">Reading</span>
+        <span style="--c:var(--green)">Normal (learned with L)</span>
+        <span style="--c:var(--red)">Alarm line (dose fires below)</span>
+        <span style="--c:var(--orange)">Dose</span>
+        <span style="--c:var(--purple)">Meal (auto-detected or marked)</span>
+        <span style="--c:rgba(21,128,61,.35)">In-range band</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Run controls</h2>
+      <div class="row" style="margin-bottom:10px">
+        <input id="runName" type="text" value="Basic-1" style="width:150px" aria-label="Run name">
+        <button id="btnStart" class="primary">Start run</button>
+        <button id="btnMeal" class="meal" disabled title="Optional – the dashboard also detects the meal by itself">Meal consumed</button>
+        <button id="btnEnd" disabled>End run &amp; save</button>
+        <button id="btnLearn" disabled title="Sends L to the Arduino">Learn normal (L)</button>
+        <button id="btnLoad">Open saved CSV</button>
+        <input id="fileIn" type="file" accept=".csv" hidden>
+      </div>
+      <div class="row">
+        <label class="small">Alarm level <input id="setAlarm" type="number" value="50"></label>
+        <label class="small">In-range ± <input id="setBand" type="number" value="25"></label>
+        <label class="small">Dose time (ms) <input id="setDose" type="number" value="1000"></label>
+        <label class="small"><input id="learnAtStart" type="checkbox" checked> Learn normal when a run starts</label>
+      </div>
+      <p class="sub" style="color:var(--muted);font-size:12px;margin:8px 0 0">
+        Alarm level and dose time must match the numbers in your Arduino sketch. In-range ± is how close to normal counts as "in range".
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Arduino messages</h2>
+      <div id="log"></div>
+    </div>
+  </section>
+
+  <aside style="display:grid;gap:16px;align-content:start">
+    <div class="card">
+      <h2>Status</h2>
+      <div id="status" class="wait">Waiting</div>
+      <div class="stats" style="margin-top:12px">
+        <div class="stat"><div class="k">Reading</div><div class="v" id="vReading">–</div></div>
+        <div class="stat"><div class="k">Normal</div><div class="v" id="vNormal">–</div></div>
+        <div class="stat"><div class="k">Acid shift</div><div class="v" id="vShift">–</div></div>
+        <div class="stat"><div class="k">Run time</div><div class="v" id="vTime">–</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>This run</h2>
+      <div class="stats">
+        <div class="stat"><div class="k">Doses</div><div class="v" id="sDoses">0</div></div>
+        <div class="stat"><div class="k">Pump time</div><div class="v" id="sPump">0 s</div></div>
+        <div class="stat"><div class="k">Lowest reading</div><div class="v" id="sLow">–</div></div>
+        <div class="stat"><div class="k">Biggest shift</div><div class="v" id="sMax">–</div></div>
+        <div class="stat"><div class="k">Time in range</div><div class="v" id="sTir">–</div></div>
+        <div class="stat"><div class="k">Meal → back to normal</div><div class="v" id="sRec">–</div></div>
+        <div class="stat"><div class="k">Meal → 1st dose</div><div class="v" id="sFirst">–</div></div>
+        <div class="stat"><div class="k">Restarts</div><div class="v" id="sRestart">0</div></div>
+      </div>
+      <p style="color:var(--muted);font-size:12px;margin:8px 0 0">Time in range is counted from the meal (detected automatically, or marked with the button).</p>
+    </div>
+    <div class="card">
+      <h2>Events</h2>
+      <ul id="events"></ul>
+    </div>
+  </aside>
+</main>
+
+<script>
+/* ============================================================
+   1. STATE - everything the dashboard remembers
+   ============================================================ */
+const S = {
+  port:null, reader:null, writer:null, connected:false,
+  normal:null,            // learned "normal" reading from the Arduino
+  phase:'wait',           // ok | spike | mix | learn | wait | safety
+  sessionStart:performance.now(),
+  run:null,               // current run (or a loaded one)
+  lastReading:null, lastShift:null,
+};
+function newRun(name){
+  return { name, start:performance.now(), clockStart:new Date(), points:[], events:[], mealT:null,
+           backT:null, firstDoseT:null, restarts:0, loaded:false, ended:false };
+}
+const $ = id => document.getElementById(id);
+const nowT = () => S.run ? (performance.now() - S.run.start)/1000 : 0;
+const setting = id => Number($(id).value) || 0;
+
+/* ============================================================
+   2. SERIAL CONNECTION (Web Serial API built into Chrome)
+   ============================================================ */
+if (!('serial' in navigator)) {
+  $('warn').style.display='block';
+  $('warn').textContent='This browser cannot talk to USB devices. Open this file in Google Chrome or Microsoft Edge.';
+  $('btnConnect').disabled=true;
+}
+
+let loopDone = null;          // promise that finishes when the read loop has fully stopped
+let wantConnected = false;    // true = user wants to stay connected (used for auto-reconnect)
+
+$('btnConnect').onclick = async () => {
+  try {
+    // Re-use the port you picked before (no list needed); otherwise Chrome shows the list
+    const known = await navigator.serial.getPorts();
+    const port = known.length === 1 ? known[0] : await navigator.serial.requestPort();
+    await connectTo(port);
+  } catch (e) {
+    showWarn('Connection cancelled: ' + e.message);
+  }
+};
+
+async function connectTo(port){
+  try {
+    await port.open({ baudRate: 9600 });                  // must match Serial.begin(9600)
+  } catch (e) {
+    if (e.name !== 'InvalidStateError') {                 // InvalidStateError = already open, that's fine
+      showWarn('Could not open the port. Close the Arduino IDE Serial Monitor (and Serial Plotter), then click Connect again.');
+      return;
+    }
+  }
+  S.port = port; S.connected = true; wantConnected = true;
+  hideWarn(); updateConn();
+  loopDone = readLoop();
+}
+
+$('btnDisconnect').onclick = () => { wantConnected = false; disconnect(); };
+async function disconnect(){
+  S.connected = false;
+  try { if (S.reader) await S.reader.cancel(); } catch(e){}   // 1. stop reading
+  if (loopDone) { try { await loopDone; } catch(e){} }        // 2. wait until reading has fully stopped
+  try { if (S.port) await S.port.close(); } catch(e){}        // 3. only then close the port
+  updateConn();
+}
+
+// USB cable unplugged / plugged back in
+if ('serial' in navigator) {
+  navigator.serial.addEventListener('disconnect', e => {
+    if (e.target === S.port) { S.connected = false; updateConn(); showWarn('USB unplugged. Plug it back in - the dashboard will reconnect by itself.'); }
+  });
+  navigator.serial.addEventListener('connect', e => {
+    if (wantConnected && !S.connected) setTimeout(() => connectTo(e.target), 1500);
+  });
+}
+
+async function readLoop(){
+  const decoder = new TextDecoderStream();
+  const closed = S.port.readable.pipeTo(decoder.writable).catch(()=>{});
+  S.reader = decoder.readable.getReader();
+  let buf = '';
+  try {
+    while (S.connected) {
+      const { value, done } = await S.reader.read();
+      if (done) break;
+      buf += value;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {           // split into whole lines
+        handleLine(buf.slice(0,i).replace(/\r/g,''));
+        buf = buf.slice(i+1);
+      }
+    }
+  } catch (e) {
+    if (S.connected) showWarn('Lost connection to the Arduino. Click Connect again.');
+  } finally {
+    try { S.reader.releaseLock(); } catch(e){}
+    await closed;
+    if (S.connected) { S.connected=false; try{await S.port.close();}catch(e){} updateConn(); }
+  }
+}
+
+async function sendText(t){
+  if (!S.port || !S.port.writable) return;
+  const w = S.port.writable.getWriter();
+  await w.write(new TextEncoder().encode(t));
+  w.releaseLock();
+}
+
+function updateConn(){
+  $('conn').textContent = S.connected ? 'Connected' : 'Not connected';
+  $('conn').className = 'pill ' + (S.connected ? 'conn-on' : 'conn-off');
+  $('btnConnect').disabled = S.connected || !('serial' in navigator);
+  $('btnDisconnect').disabled = !S.connected;
+  $('btnLearn').disabled = !S.connected;
+}
+
+/* ============================================================
+   3. UNDERSTANDING THE ARDUINO'S TEXT
+   Each line the basic sketch prints is matched to a meaning.
+   ============================================================ */
+function handleLine(line){
+  if (!line.trim()) return;
+  appendLog(line);
+  let m;
+
+  if ((m = line.match(/Saved normal = (\d+)/))) {
+    S.normal = +m[1]; S.phase='ok'; addEvent('learn', 'Normal learned = '+S.normal);
+  }
+  else if ((m = line.match(/using saved normal = (\d+)/))) {
+    S.normal = +m[1];
+    if (S.run && !S.run.ended && S.run.points.length > 5) { S.run.restarts++; addEvent('restart','Arduino restarted (normal kept = '+S.normal+')'); }
+  }
+  else if (/no normal saved yet/.test(line)) { S.normal=null; S.phase='wait'; }
+  else if (/Learning 'normal'/.test(line)) { S.phase='learn'; }
+  else if (/SAFETY STOP/.test(line)) { S.phase='safety'; addEvent('safety','SAFETY STOP - pump frozen off'); }
+  else if ((m = line.match(/Reading:\s*(\d+)\s+\(waiting/))) {
+    S.phase='wait'; addPoint(+m[1]);
+  }
+  else if ((m = line.match(/Reading:\s*(\d+)\s+Acid shift:\s*(-?\d+)/))) {
+    const r = +m[1];
+    if (S.normal === null) S.normal = r + (+m[2]);      // recover normal if we joined mid-run
+    let d;
+    if ((d = line.match(/SPIKE! Dose #(\d+)/))) {
+      S.phase='spike'; addPoint(r); addEvent('dose','Dose #'+d[1]+' at reading '+r, {n:+d[1]});
+    } else if ((d = line.match(/Back to normal after (\d+)/))) {
+      S.phase='ok'; addPoint(r); addEvent('back','Back to normal after '+d[1]+' dose(s)');
+    } else { S.phase='ok'; addPoint(r); }
+  }
+  else if ((m = line.match(/mixing\.\.\. reading:\s*(\d+)/))) {
+    S.phase='mix'; addPoint(+m[1]);
+  }
+  else if ((m = line.match(/Sensor(?: reading)?:\s*(\d+)/))) {   // sensor-only sketches
+    addPoint(+m[1]);
+  }
+  refreshPanels();
+}
+
+/* ============================================================
+   4. RECORDING POINTS AND EVENTS
+   ============================================================ */
+function addPoint(reading){
+  S.lastReading = reading;
+  S.lastShift = S.normal !== null ? S.normal - reading : null;
+  if (!S.run || S.run.ended || S.run.loaded) return;   // only record inside a run
+  S.run.points.push({ t: nowT(), clock: new Date().toLocaleTimeString(), reading, shift:S.lastShift,
+                      normal:S.normal, phase:S.phase });
+  detectMeal();
+  scheduleDraw();
+}
+
+/* Automatic meal detection: a sudden jump toward acid from a steady reading.
+   (UVA's system also infers meals nobody announced from the glucose data.) */
+function detectMeal(){
+  const run = S.run, P = run.points;
+  if (run.mealT !== null || P.length < 8) return;
+  const cur = P[P.length-1];
+  const before = P.slice(-8, -3).map(p=>p.reading).sort((a,b)=>a-b);
+  const base = before[Math.floor(before.length/2)];          // typical reading just before
+  if (base - cur.reading < 10) return;                       // not a real drop toward acid
+  // walk back to where the drop started
+  let k = P.length-1;
+  while (k > 0 && P[k-1].reading < base - 2) k--;
+  const t = k > 0 ? P[k-1].t : P[k].t;
+  run.mealT = t; run.mealAuto = true;
+  addEvent('meal', 'Meal detected automatically', {}, t);
+  $('btnMeal').textContent = 'Meal detected ✓'; $('btnMeal').disabled = true;
+  if (run.firstDoseT !== null && run.firstDoseT < t) run.firstDoseT = null;
+}
+
+function addEvent(type, text, extra={}, atT=null){
+  const t = S.run && !S.run.ended && !S.run.loaded ? (atT ?? nowT()) : null;
+  if (t !== null) {
+    S.run.events.push({ t, type, text, reading:S.lastReading, ...extra });
+    S.run.events.sort((a,b)=>a.t-b.t);
+    if (type==='dose' && S.run.firstDoseT===null && (S.run.mealT===null || t>=S.run.mealT)) S.run.firstDoseT = t;
+    if (type==='back' && S.run.mealT!==null && S.run.backT===null) S.run.backT = t;
+  }
+  const li = document.createElement('li');
+  li.textContent = (t!==null ? fmtT(t)+'  ' : '') + text;
+  li.style.color = {dose:'var(--orange)',meal:'var(--purple)',back:'var(--green)',restart:'var(--red)',safety:'var(--red)'}[type] || '';
+  $('events').prepend(li);
+  scheduleDraw();
+}
+
+/* ============================================================
+   5. RUN BUTTONS
+   ============================================================ */
+$('btnStart').onclick = () => {
+  S.run = newRun($('runName').value.trim() || 'Run');
+  $('events').innerHTML='';
+  addEvent('start','Run "'+S.run.name+'" started');
+  if ($('learnAtStart').checked && S.connected) {
+    sendText('L\n');                                  // re-learn normal from the water as it is now
+    addEvent('note','Asked Arduino to learn normal (10 s) – keep the probe still');
+  }
+  $('btnMeal').disabled=false; $('btnMeal').textContent='Meal consumed';
+  $('btnEnd').disabled=false; $('btnStart').disabled=true;
+  $('chartTitle').textContent = 'Live reading · ' + S.run.name;
+  refreshPanels(); scheduleDraw();
+};
+$('btnMeal').onclick = () => {
+  if (!S.run) return;
+  S.run.mealT = nowT(); S.run.backT = null;
+  if (S.run.firstDoseT !== null && S.run.firstDoseT < S.run.mealT) S.run.firstDoseT = null;
+  addEvent('meal','Meal consumed (marked by hand)');
+  $('btnMeal').disabled = true;
+};
+$('btnEnd').onclick = () => {
+  if (!S.run) return;
+  addEvent('end','Run ended');
+  S.run.ended = true;
+  downloadCSV(S.run); downloadPNG(S.run);
+  $('btnStart').disabled=false; $('btnMeal').disabled=true; $('btnEnd').disabled=true;
+  // suggest the next run name: Basic-1 -> Basic-2
+  $('runName').value = $('runName').value.replace(/(\d+)$/, n => String(+n+1));
+};
+$('btnLearn').onclick = () => sendText('L\n');
+$('btnPng').onclick = () => S.run && downloadPNG(S.run);
+$('btnLoad').onclick = () => $('fileIn').click();
+$('fileIn').onchange = e => { const f=e.target.files[0]; if (f) f.text().then(t=>loadCSV(t, f.name)); e.target.value=''; };
+['setAlarm','setBand','setDose'].forEach(id => $(id).oninput = () => { refreshPanels(); scheduleDraw(); });
+
+/* ============================================================
+   6. RUN STATISTICS (what goes in your report table)
+   ============================================================ */
+function runStats(run){
+  const P = run.points, band = setting('setBand');
+  const doses = run.events.filter(e=>e.type==='dose').length;
+  const after = run.mealT===null ? P : P.filter(p=>p.t>=run.mealT);
+  let low=null, max=null;
+  after.forEach(p=>{ if(low===null||p.reading<low) low=p.reading; if(p.shift!==null && (max===null||p.shift>max)) max=p.shift; });
+  // time-weighted time in range: each reading "owns" the time until the next one
+  let inT=0, allT=0;
+  for (let i=0;i<after.length-1;i++){
+    const dt = after[i+1].t - after[i].t; if (dt<=0 || dt>10 || after[i].shift===null) continue;
+    allT += dt; if (Math.abs(after[i].shift) <= band) inT += dt;
+  }
+  return {
+    doses, pumpS: doses*setting('setDose')/1000, low, max,
+    tir: allT>0 ? 100*inT/allT : null,
+    rec: run.mealT!==null && run.backT!==null ? run.backT-run.mealT : null,
+    first: run.mealT!==null && run.firstDoseT!==null && run.firstDoseT>=run.mealT ? run.firstDoseT-run.mealT : null,
+    dur: P.length ? P[P.length-1].t : 0, restarts: run.restarts
+  };
+}
+
+function refreshPanels(){
+  const st = $('status');
+  const map = { ok:['Normal range','ok'], spike:['SPIKE – dosing','spike'], mix:['Mixing / recovering','mix'],
+                learn:['Learning normal…','wait'], wait:['Waiting for L','wait'], safety:['SAFETY STOP','spike'] };
+  const [txt,cls] = map[S.phase] || map.wait;
+  st.textContent = txt; st.className = cls;
+  $('vReading').textContent = S.lastReading ?? '–';
+  $('vNormal').textContent = S.normal ?? '–';
+  $('vShift').textContent = S.lastShift ?? '–';
+  if (S.run) {
+    const s = runStats(S.run);
+    $('vTime').textContent = fmtT(S.run.loaded||S.run.ended ? s.dur : nowT());
+    $('sDoses').textContent = s.doses;
+    $('sPump').textContent = s.pumpS.toFixed(1)+' s';
+    $('sLow').textContent = s.low ?? '–';
+    $('sMax').textContent = s.max ?? '–';
+    $('sTir').textContent = s.tir===null ? '–' : s.tir.toFixed(0)+' %';
+    $('sRec').textContent = s.rec===null ? '–' : fmtT(s.rec);
+    $('sFirst').textContent = s.first===null ? '–' : fmtT(s.first);
+    $('sRestart').textContent = s.restarts;
+  }
+}
+setInterval(()=>{ if (S.run && !S.run.ended && !S.run.loaded) $('vTime').textContent = fmtT(nowT()); }, 1000);
+
+/* ============================================================
+   7. THE CHART (drawn by hand on a canvas - no internet needed)
+   ============================================================ */
+let drawPending=false;
+function scheduleDraw(){ if(!drawPending){ drawPending=true; requestAnimationFrame(()=>{drawPending=false; drawChart($('chart'), S.run);}); } }
+window.addEventListener('resize', scheduleDraw);
+
+function css(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+
+function drawChart(canvas, run, opts={}){
+  const dpr = opts.dpr || window.devicePixelRatio || 1;
+  const W = opts.w || canvas.clientWidth, H = opts.h || canvas.clientHeight;
+  canvas.width = W*dpr; canvas.height = H*dpr;
+  const g = canvas.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0);
+  const C = { ink:css('--ink'), muted:css('--muted'), line:css('--line'), blue:css('--blue'), green:css('--green'),
+              red:css('--red'), orange:css('--orange'), purple:css('--purple'), band:css('--band'), card:css('--card') };
+  g.fillStyle = C.card; g.fillRect(0,0,W,H);
+  const top = opts.top || 14, L=52, R=16, B=36, pw=W-L-R, ph=H-top-B;
+
+  const P = run ? run.points : [];
+  if (!P.length){
+    g.fillStyle=C.muted; g.font='14px sans-serif'; g.textAlign='center';
+    g.fillText(run ? 'Waiting for readings…' : 'Connect the Arduino, then press "Start run".', W/2, H/2);
+    return;
+  }
+  const normal = P[P.length-1].normal ?? S.normal;
+  const alarm = setting('setAlarm'), band = setting('setBand');
+  let ymin=Infinity, ymax=-Infinity;
+  P.forEach(p=>{ ymin=Math.min(ymin,p.reading); ymax=Math.max(ymax,p.reading); });
+  if (normal!=null){ ymin=Math.min(ymin, normal-alarm-10); ymax=Math.max(ymax, normal+band+5); }
+  const pad = Math.max(5,(ymax-ymin)*0.08); ymin-=pad; ymax+=pad;
+  const tmax = Math.max(60, P[P.length-1].t*1.03);
+  const X = t => L + pw*t/tmax, Y = v => top + ph*(1-(v-ymin)/(ymax-ymin));
+
+  // grid + axes labels
+  g.strokeStyle=C.line; g.lineWidth=1; g.fillStyle=C.muted; g.font='12px sans-serif';
+  const ystep = niceStep((ymax-ymin)/6);
+  g.textAlign='right'; g.textBaseline='middle';
+  for (let v=Math.ceil(ymin/ystep)*ystep; v<=ymax; v+=ystep){ g.beginPath(); g.moveTo(L,Y(v)); g.lineTo(W-R,Y(v)); g.stroke(); g.fillText(v,L-6,Y(v)); }
+  const xstep = niceStep(tmax/8);
+  g.textAlign='center'; g.textBaseline='top';
+  for (let t=0; t<=tmax; t+=xstep){ g.beginPath(); g.moveTo(X(t),top); g.lineTo(X(t),top+ph); g.stroke(); g.fillText(fmtT(t),X(t),top+ph+6); }
+  g.save(); g.translate(14, top+ph/2); g.rotate(-Math.PI/2); g.textAlign='center'; g.fillText('Sensor reading (lower = more acidic)',0,0); g.restore();
+
+  if (normal!=null){
+    // in-range band
+    g.fillStyle=C.band; g.fillRect(L, Y(normal+band), pw, Y(normal-band)-Y(normal+band));
+    dashed(g, L, W-R, Y(normal), C.green, 'Normal '+normal, 'left');
+    dashed(g, L, W-R, Y(normal-alarm), C.red, 'Alarm '+(normal-alarm), 'left');
+  }
+  // event markers
+  run.events.forEach(e=>{
+    const col = {dose:C.orange, meal:C.purple, back:C.green, restart:C.red, safety:C.red}[e.type]; if(!col) return;
+    g.strokeStyle=col; g.lineWidth = e.type==='dose'?2:1.5; g.setLineDash(e.type==='dose'?[]:[3,3]);
+    g.beginPath(); g.moveTo(X(e.t),top); g.lineTo(X(e.t),top+ph); g.stroke(); g.setLineDash([]);
+    g.fillStyle=col; g.font='bold 11px sans-serif'; g.textAlign='left'; g.textBaseline='top';
+    const lab = e.type==='dose' ? 'D'+(e.n||'') : e.type==='meal' ? 'Meal' : e.type==='back' ? 'Back to normal' : e.type==='restart' ? 'Restart' : 'STOP';
+    g.fillText(lab, X(e.t)+3, top+2 + (e.type==='back'?14:0));
+  });
+  // reading line
+  g.strokeStyle=C.blue; g.lineWidth=2; g.beginPath();
+  P.forEach((p,i)=>{ const x=X(p.t), y=Y(p.reading); (i && p.t-P[i-1].t<10) ? g.lineTo(x,y) : g.moveTo(x,y); });
+  g.stroke();
+  const lp=P[P.length-1]; g.fillStyle=C.blue; g.beginPath(); g.arc(X(lp.t),Y(lp.reading),4,0,7); g.fill();
+}
+function dashed(g,x1,x2,y,col,label){ g.strokeStyle=col; g.lineWidth=1.5; g.setLineDash([6,4]); g.beginPath(); g.moveTo(x1,y); g.lineTo(x2,y); g.stroke(); g.setLineDash([]); g.fillStyle=col; g.font='bold 11px sans-serif'; g.textAlign='right'; g.textBaseline='bottom'; g.fillText(label,x2-4,y-2); }
+function niceStep(raw){ const p=Math.pow(10,Math.floor(Math.log10(raw||1))); const f=raw/p; return (f<=1?1:f<=2?2:f<=5?5:10)*p; }
+
+/* ============================================================
+   8. SAVING: CSV for data, PNG for your report
+   ============================================================ */
+function downloadCSV(run){
+  const rows = [['run','t_s','clock','reading','shift','normal','phase','event','detail']];
+  run.points.forEach(p=>rows.push([run.name,p.t.toFixed(2),p.clock,p.reading,p.shift??'',p.normal??'',p.phase,'','']));
+  run.events.forEach(e=>rows.push([run.name,e.t.toFixed(2),'',e.reading??'','','',
+                                   '',e.type,(e.n?('dose '+e.n+' | '):'')+e.text.replace(/,/g,';')]));
+  rows.sort((a,b)=> (a===rows[0]?-1:b===rows[0]?1: a[1]-b[1]));
+  const s = runStats(run);
+  const meta = [['# settings','alarm='+setting('setAlarm'),'band=±'+setting('setBand'),'dose_ms='+setting('setDose'),'started='+run.clockStart.toLocaleString()],
+                ['# summary','doses='+s.doses,'pump_s='+s.pumpS.toFixed(1),'lowest='+s.low,'max_shift='+s.max,
+                 'time_in_range_pct='+(s.tir===null?'':s.tir.toFixed(1)),'meal_to_normal_s='+(s.rec===null?'':s.rec.toFixed(1)),
+                 'meal_to_first_dose_s='+(s.first===null?'':s.first.toFixed(1)),'restarts='+s.restarts]];
+  const text = meta.concat(rows).map(r=>r.join(',')).join('\n');
+  save(new Blob([text],{type:'text/csv'}), safeName(run.name)+'.csv');
+}
+
+function downloadPNG(run){
+  const c = document.createElement('canvas'), W=1400, H=780;
+  drawChart(c, run, {w:W, h:H, dpr:1, top:110});
+  const g = c.getContext('2d'), s = runStats(run);
+  g.fillStyle=css('--ink'); g.font='bold 26px sans-serif'; g.textAlign='left'; g.textBaseline='top';
+  g.fillText('Artificial pancreas run: '+run.name, 52, 18);
+  g.font='16px sans-serif'; g.fillStyle=css('--muted');
+  g.fillText(`Doses ${s.doses}  ·  Pump ${s.pumpS.toFixed(1)} s  ·  Lowest ${s.low??'–'}  ·  Biggest shift ${s.max??'–'}  ·  Time in range ${s.tir===null?'–':s.tir.toFixed(0)+'%'}  ·  Meal→normal ${s.rec===null?'–':fmtT(s.rec)}`, 52, 56);
+  g.fillText(`Alarm level ${setting('setAlarm')}  ·  In-range ±${setting('setBand')}  ·  Dose ${setting('setDose')} ms  ·  ${run.clockStart.toLocaleString()}`, 52, 80);
+  c.toBlob(b=>save(b, safeName(run.name)+'.png'));
+}
+
+function loadCSV(text, fname){
+  const run = newRun(fname.replace(/\.csv$/,'')); run.loaded=true; run.ended=true;
+  text.split(/\r?\n/).forEach(line=>{
+    const c = line.split(','); if (c.length<8 || c[0]==='run' || c[0].startsWith('#')) {
+      if (c[0]==='# settings'){ c.forEach(x=>{ const m=x.match(/(alarm|band|dose_ms)=±?(\d+)/); if(m) $({alarm:'setAlarm',band:'setBand',dose_ms:'setDose'}[m[1]]).value=m[2]; }); }
+      return;
+    }
+    const t=+c[1];
+    if (c[7]) { const e={t,type:c[7],text:c[8]||c[7],reading:c[3]?+c[3]:null}; const d=(c[8]||'').match(/dose (\d+)/); if(d) e.n=+d[1];
+                run.events.push(e); if(e.type==='meal') run.mealT=t; if(e.type==='dose'&&run.firstDoseT===null) run.firstDoseT=t;
+                if(e.type==='back'&&run.mealT!==null&&run.backT===null) run.backT=t; if(e.type==='restart') run.restarts++; }
+    else run.points.push({t, clock:c[2], reading:+c[3], shift:c[4]===''?null:+c[4], normal:c[5]===''?null:+c[5], phase:c[6]});
+  });
+  S.run = run;
+  const lp = run.points[run.points.length-1];
+  if (lp){ S.lastReading=lp.reading; S.lastShift=lp.shift; S.normal=lp.normal; }
+  $('chartTitle').textContent = 'Saved run · ' + run.name;
+  $('events').innerHTML=''; run.events.slice().reverse().forEach(e=>{ const li=document.createElement('li'); li.textContent=fmtT(e.t)+'  '+e.text; $('events').appendChild(li); });
+  $('btnStart').disabled=false;
+  refreshPanels(); scheduleDraw();
+}
+
+/* ============================================================
+   9. SMALL HELPERS
+   ============================================================ */
+function fmtT(s){ s=Math.max(0,Math.round(s)); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); }
+function safeName(n){ return n.replace(/[^\w\-]+/g,'_'); }
+function save(blob, name){ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000); }
+function appendLog(line){ const el=$('log'); el.textContent += line+'\n'; if (el.textContent.length>40000) el.textContent=el.textContent.slice(-30000); el.scrollTop=el.scrollHeight; }
+function showWarn(t){ $('warn').style.display='block'; $('warn').textContent=t; }
+function hideWarn(){ $('warn').style.display='none'; }
+
+// test hook: lets the page be checked without hardware
+window.__feed = handleLine;
+updateConn(); refreshPanels(); scheduleDraw();
+</script>
+</body>
+</html>

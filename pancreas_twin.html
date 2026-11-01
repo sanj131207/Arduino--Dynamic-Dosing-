@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tub A Digital Twin</title>
+<!--
+  ============================================================
+  TUB A DIGITAL TWIN  (identify -> replay -> optimise)
+  Same 3-stage idea as UVA's digital-twin artificial pancreas:
+   1. IDENTIFY: learn a small model of Tub A from your saved runs
+   2. REPLAY:   re-run a real meal inside the twin with other settings
+   3. OPTIMISE: compare controllers on small / standard / large meals
+  Open in Chrome. No internet or installs needed.
+  Your Basic-1 and Basic-2 runs are already built in; add more
+  with "Add run CSVs".
+  ============================================================
+-->
+<style>
+  :root{--bg:#f4f5f7;--card:#fff;--ink:#1d2330;--muted:#667085;--line:#e3e6ea;--blue:#2563eb;--green:#15803d;--red:#dc2626;--orange:#ea580c;--purple:#7c3aed;--teal:#0d9488;--band:rgba(21,128,61,.08)}
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1218;--card:#171b23;--ink:#e7eaf0;--muted:#98a2b3;--line:#2a303b;--blue:#60a5fa;--green:#4ade80;--red:#f87171;--orange:#fb923c;--purple:#a78bfa;--teal:#2dd4bf;--band:rgba(74,222,128,.08)}}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  header{padding:14px 20px;border-bottom:1px solid var(--line);background:var(--card)} header h1{font-size:18px;margin:0} .sub{color:var(--muted);font-size:13px}
+  main{padding:16px 20px;display:grid;gap:16px;max-width:1400px;margin:0 auto}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .card h2{font-size:14px;margin:0 0 4px} .card .hint{color:var(--muted);font-size:13px;margin:0 0 12px}
+  .grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px} @media(max-width:1000px){.grid2{grid-template-columns:1fr}}
+  button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:7px 12px;cursor:pointer} button.primary{background:var(--blue);border-color:var(--blue);color:#fff} button:disabled{opacity:.5}
+  .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  input[type=number]{font:inherit;width:78px;padding:5px 7px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink)}
+  select{font:inherit;padding:5px 7px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink)}
+  table{border-collapse:collapse;width:100%;font-size:13.5px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top} th{color:var(--muted);font-weight:600}
+  td.num{font-variant-numeric:tabular-nums}
+  .params{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
+  .param{background:var(--bg);border-radius:8px;padding:9px 11px} .param .k{font-weight:600;font-size:13.5px} .param .m{color:var(--muted);font-size:12.5px;margin:2px 0 6px}
+  .chart{position:relative;height:360px} canvas{width:100%;height:100%;display:block}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12px;color:var(--muted);margin-top:6px}
+  .legend span::before{content:"";display:inline-block;width:14px;height:3px;margin-right:6px;vertical-align:middle;background:var(--c)}
+  .good{color:var(--green);font-weight:600} .bad{color:var(--red);font-weight:600}
+  fieldset{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:0} legend{font-size:13px;font-weight:600;padding:0 4px}
+  label.s{font-size:13px;color:var(--muted);display:inline-flex;gap:5px;align-items:center;margin:3px 8px 3px 0}
+  #status{font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Tub A Digital Twin</h1>
+  <div class="sub">A small computer model of your "bloodstream" tub, learned from your own runs, used to test dosing strategies before trying them on the real tub.</div>
+</header>
+<main>
+
+<div class="card">
+  <h2>1 · Runs the twin learns from</h2>
+  <p class="hint">Basic-1 and Basic-2 are built in. Add new runs saved from the dashboard. Tick the runs used for learning; untick one to test whether the twin can predict it.</p>
+  <div class="row" style="margin-bottom:10px">
+    <button id="btnAdd">Add run CSVs</button><input id="fileIn" type="file" accept=".csv" multiple hidden>
+    <button id="btnFit" class="primary">Learn twin from ticked runs</button>
+    <span id="status"></span>
+  </div>
+  <table id="runTable"><thead><tr><th>Use</th><th>Run</th><th>Normal</th><th>Meal at</th><th>Doses</th><th>Meal size (twin)</th><th>Twin error (avg)</th></tr></thead><tbody></tbody></table>
+</div>
+
+<div class="card">
+  <h2>2 · What the twin learned about Tub A</h2>
+  <p class="hint">These are the twin's "physiology" numbers. They are learned from data, but you can also edit them by hand. Units: sensor counts (about 50 counts ≈ 1 pH unit) and seconds.</p>
+  <div class="params" id="params"></div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2>3 · Real run vs twin</h2>
+    <p class="hint">Dots are the real sensor readings; the line is the twin replaying the same meal and the same doses.</p>
+    <div class="row" style="margin-bottom:6px"><select id="selRun"></select><button id="pngFit">Save PNG</button></div>
+    <div class="chart"><canvas id="cFit"></canvas></div>
+    <div class="legend"><span style="--c:var(--blue)">Real reading</span><span style="--c:var(--red)">Twin</span><span style="--c:var(--orange)">Dose</span><span style="--c:var(--purple)">Meal</span></div>
+  </div>
+
+  <div class="card">
+    <h2>4 · What-if replay</h2>
+    <p class="hint">Replay a meal inside the twin with two different controllers and compare. Nothing is pumped; this is all simulation.</p>
+    <div class="row" style="margin-bottom:8px">
+      <label class="s">Meal <select id="selMeal"></select></label>
+      <label class="s">Meal size <input id="mealSize" type="number" value="250"></label>
+      <button id="pngWhat">Save PNG</button>
+    </div>
+    <div class="row" style="gap:10px;margin-bottom:8px;align-items:stretch">
+      <fieldset><legend style="color:var(--orange)">A · Basic (fixed dose)</legend>
+        <label class="s">Alarm <input id="aAlarm" type="number" value="50"></label>
+        <label class="s">Dose ms <input id="aDose" type="number" value="1000"></label>
+        <label class="s">Mix s <input id="aMix" type="number" value="15"></label>
+      </fieldset>
+      <fieldset><legend style="color:var(--teal)">B · Twin-predictive</legend>
+        <label class="s">Meal trigger <input id="bMeal" type="number" value="30"></label>
+        <label class="s">Falling faster than /s <input id="bFall" type="number" value="3"></label>
+        <label class="s">Correction trigger <input id="bCorr" type="number" value="45"></label>
+        <label class="s">Look-ahead s <input id="bLook" type="number" value="10"></label>
+        <label class="s">Target <input id="bTarget" type="number" value="25"></label>
+        <label class="s">Max dose ms <input id="bMax" type="number" value="3000"></label>
+        <label class="s">Mix s <input id="bMix" type="number" value="8"></label>
+      </fieldset>
+    </div>
+    <div class="chart"><canvas id="cWhat"></canvas></div>
+    <div class="legend"><span style="--c:var(--orange)">A · Basic</span><span style="--c:var(--teal)">B · Twin-predictive</span><span style="--c:var(--red)">Alarm (50)</span><span style="--c:rgba(21,128,61,.35)">In range ±35</span></div>
+    <table id="whatTable" style="margin-top:8px"></table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>5 · Stress test: does each controller cope with different meals?</h2>
+  <p class="hint">A "precision" controller should handle a small and a large meal safely, not only the one it was tuned on. Overshoot = water pushed too far basic (like a dangerous low in diabetes). The overshoot limit (60) is an assumption until you run a real overdose test.</p>
+  <div class="row" style="margin-bottom:8px"><button id="btnOpt">Search best Twin-predictive settings</button><span id="optStatus" class="sub"></span></div>
+  <table id="stressTable"></table>
+</div>
+
+</main>
+<script>
+/* ============================================================
+   EMBEDDED RUNS (your Basic-1 and Basic-2 from 28 Oct)
+   ============================================================ */
+const BUILTIN = [{"name": "Basic-1", "csv": "# settings,alarm=50,band=\u00b125,dose_ms=1000,started=28/10/2026, 19:33:18\n# summary,doses=3,pump_s=3.0,lowest=281,max_shift=158,time_in_range_pct=0.0,lemon_to_normal_s=48.5,lemon_to_first_dose_s=,restarts=0\nrun,t_s,clock,reading,shift,normal,phase,event,detail\nBasic-1,0.00,,437,,,,start,Run \"Basic-1\" started\nBasic-1,0.25,19:33:18,436,3,439,ok,,\nBasic-1,0.95,19:33:19,436,3,439,ok,,\nBasic-1,1.66,19:33:20,437,2,439,ok,,\nBasic-1,2.36,19:33:20,436,3,439,ok,,\nBasic-1,3.07,19:33:21,436,3,439,ok,,\nBasic-1,3.77,19:33:22,438,1,439,ok,,\nBasic-1,4.47,19:33:22,436,3,439,ok,,\nBasic-1,5.18,19:33:23,437,2,439,ok,,\nBasic-1,5.88,19:33:24,436,3,439,ok,,\nBasic-1,6.59,19:33:25,437,2,439,ok,,\nBasic-1,7.29,19:33:25,436,3,439,ok,,\nBasic-1,7.99,19:33:26,437,2,439,ok,,\nBasic-1,8.70,19:33:27,436,3,439,ok,,\nBasic-1,9.40,19:33:27,437,2,439,ok,,\nBasic-1,10.11,19:33:28,436,3,439,ok,,\nBasic-1,10.81,19:33:29,435,4,439,ok,,\nBasic-1,11.51,19:33:30,436,3,439,ok,,\nBasic-1,12.22,19:33:30,437,2,439,ok,,\nBasic-1,12.92,19:33:31,435,4,439,ok,,\nBasic-1,13.63,19:33:32,435,4,439,ok,,\nBasic-1,14.33,19:33:32,436,3,439,ok,,\nBasic-1,15.03,19:33:33,436,3,439,ok,,\nBasic-1,15.74,19:33:34,435,4,439,ok,,\nBasic-1,16.44,19:33:34,434,5,439,ok,,\nBasic-1,17.15,19:33:35,435,4,439,ok,,\nBasic-1,17.85,19:33:36,435,4,439,ok,,\nBasic-1,18.55,19:33:37,435,4,439,ok,,\nBasic-1,19.26,19:33:37,434,5,439,ok,,\nBasic-1,19.96,19:33:38,429,10,439,ok,,\nBasic-1,20.67,19:33:39,399,40,439,ok,,\nBasic-1,21.38,19:33:39,375,64,439,spike,,\nBasic-1,21.39,,375,,,,dose,dose 1 | Dose #1 at reading 375\nBasic-1,22.54,19:33:41,358,81,439,mix,,\nBasic-1,23.27,,358,,,,meal,Lemon added (\"meal\")\nBasic-1,23.55,19:33:42,350,89,439,mix,,\nBasic-1,24.55,19:33:43,339,100,439,mix,,\nBasic-1,25.55,19:33:44,326,113,439,mix,,\nBasic-1,26.56,19:33:45,322,117,439,mix,,\nBasic-1,27.56,19:33:46,314,125,439,mix,,\nBasic-1,28.57,19:33:47,311,128,439,mix,,\nBasic-1,29.57,19:33:48,309,130,439,mix,,\nBasic-1,30.58,19:33:49,309,130,439,mix,,\nBasic-1,31.58,19:33:50,304,135,439,mix,,\nBasic-1,32.59,19:33:51,297,142,439,mix,,\nBasic-1,33.59,19:33:52,292,147,439,mix,,\nBasic-1,34.60,19:33:53,289,150,439,mix,,\nBasic-1,35.60,19:33:54,288,151,439,mix,,\nBasic-1,36.60,19:33:55,285,154,439,mix,,\nBasic-1,38.16,19:33:56,281,158,439,spike,,\nBasic-1,38.16,,281,,,,dose,dose 2 | Dose #2 at reading 281\nBasic-1,39.32,19:33:57,287,152,439,mix,,\nBasic-1,40.32,19:33:58,326,113,439,mix,,\nBasic-1,41.33,19:33:59,341,98,439,mix,,\nBasic-1,42.33,19:34:00,353,86,439,mix,,\nBasic-1,43.34,19:34:01,364,75,439,mix,,\nBasic-1,44.34,19:34:02,370,69,439,mix,,\nBasic-1,45.34,19:34:03,371,68,439,mix,,\nBasic-1,46.35,19:34:04,372,67,439,mix,,\nBasic-1,47.35,19:34:05,372,67,439,mix,,\nBasic-1,48.36,19:34:06,374,65,439,mix,,\nBasic-1,49.36,19:34:07,375,64,439,mix,,\nBasic-1,50.37,19:34:08,378,61,439,mix,,\nBasic-1,51.37,19:34:09,379,60,439,mix,,\nBasic-1,52.38,19:34:10,380,59,439,mix,,\nBasic-1,53.38,19:34:11,381,58,439,mix,,\nBasic-1,54.93,19:34:13,382,57,439,spike,,\nBasic-1,54.93,,382,,,,dose,dose 3 | Dose #3 at reading 382\nBasic-1,56.09,19:34:14,382,57,439,mix,,\nBasic-1,57.09,19:34:15,381,58,439,mix,,\nBasic-1,58.10,19:34:16,389,50,439,mix,,\nBasic-1,59.10,19:34:17,398,41,439,mix,,\nBasic-1,60.11,19:34:18,407,32,439,mix,,\nBasic-1,61.11,19:34:19,408,31,439,mix,,\nBasic-1,62.12,19:34:20,409,30,439,mix,,\nBasic-1,63.12,19:34:21,408,31,439,mix,,\nBasic-1,64.13,19:34:22,407,32,439,mix,,\nBasic-1,65.13,19:34:23,408,31,439,mix,,\nBasic-1,66.14,19:34:24,407,32,439,mix,,\nBasic-1,67.14,19:34:25,406,33,439,mix,,\nBasic-1,68.15,19:34:26,406,33,439,mix,,\nBasic-1,69.15,19:34:27,407,32,439,mix,,\nBasic-1,70.16,19:34:28,407,32,439,mix,,\nBasic-1,71.72,19:34:30,407,32,439,ok,,\nBasic-1,71.72,,407,,,,back,Back to normal after 3 dose(s)\nBasic-1,72.40,19:34:30,407,32,439,ok,,\nBasic-1,73.11,19:34:31,407,32,439,ok,,\nBasic-1,73.81,19:34:32,407,32,439,ok,,\nBasic-1,74.51,19:34:33,407,32,439,ok,,\nBasic-1,75.22,19:34:33,407,32,439,ok,,\nBasic-1,75.92,19:34:34,406,33,439,ok,,\nBasic-1,76.63,19:34:35,407,32,439,ok,,\nBasic-1,77.33,19:34:35,406,33,439,ok,,\nBasic-1,78.03,19:34:36,407,32,439,ok,,\nBasic-1,78.74,19:34:37,406,33,439,ok,,\nBasic-1,79.44,19:34:37,407,32,439,ok,,\nBasic-1,80.15,19:34:38,407,32,439,ok,,\nBasic-1,80.85,19:34:39,407,32,439,ok,,\nBasic-1,81.55,19:34:40,407,32,439,ok,,\nBasic-1,82.26,19:34:40,407,32,439,ok,,\nBasic-1,82.96,19:34:41,407,32,439,ok,,\nBasic-1,83.67,19:34:42,407,32,439,ok,,\nBasic-1,84.37,19:34:42,407,32,439,ok,,\nBasic-1,85.07,19:34:43,407,32,439,ok,,\nBasic-1,85.78,19:34:44,408,31,439,ok,,\nBasic-1,86.48,19:34:45,408,31,439,ok,,\nBasic-1,87.19,19:34:45,408,31,439,ok,,\nBasic-1,87.89,19:34:46,407,32,439,ok,,\nBasic-1,88.59,19:34:47,407,32,439,ok,,\nBasic-1,89.30,19:34:47,407,32,439,ok,,\nBasic-1,90.00,19:34:48,407,32,439,ok,,\nBasic-1,90.71,19:34:49,408,31,439,ok,,\nBasic-1,91.41,19:34:49,408,31,439,ok,,\nBasic-1,92.12,19:34:50,408,31,439,ok,,\nBasic-1,92.82,19:34:51,407,32,439,ok,,\nBasic-1,93.52,19:34:52,407,32,439,ok,,\nBasic-1,94.23,19:34:52,406,33,439,ok,,\nBasic-1,94.93,19:34:53,407,32,439,ok,,\nBasic-1,95.64,19:34:54,407,32,439,ok,,\nBasic-1,96.34,19:34:54,409,30,439,ok,,\nBasic-1,97.04,19:34:55,408,31,439,ok,,\nBasic-1,97.62,,408,,,,end,Run ended"}, {"name": "Basic-2", "csv": "# settings,alarm=50,band=\u00b125,dose_ms=1000,started=28/10/2026, 19:42:26\n# summary,doses=2,pump_s=2.0,lowest=299,max_shift=134,time_in_range_pct=42.0,lemon_to_normal_s=37.3,lemon_to_first_dose_s=3.7,restarts=0\nrun,t_s,clock,reading,shift,normal,phase,event,detail\nBasic-2,0.00,,432,,,,start,Run \"Basic-2\" started\nBasic-2,0.16,19:42:26,432,1,433,ok,,\nBasic-2,0.87,19:42:27,430,3,433,ok,,\nBasic-2,1.57,19:42:27,431,2,433,ok,,\nBasic-2,2.28,19:42:28,432,1,433,ok,,\nBasic-2,2.98,19:42:29,431,2,433,ok,,\nBasic-2,3.68,19:42:29,432,1,433,ok,,\nBasic-2,4.39,19:42:30,432,1,433,ok,,\nBasic-2,5.09,19:42:31,430,3,433,ok,,\nBasic-2,5.80,19:42:32,430,3,433,ok,,\nBasic-2,6.50,19:42:32,431,2,433,ok,,\nBasic-2,7.21,19:42:33,431,2,433,ok,,\nBasic-2,7.91,19:42:34,430,3,433,ok,,\nBasic-2,8.61,19:42:34,430,3,433,ok,,\nBasic-2,9.32,19:42:35,429,4,433,ok,,\nBasic-2,10.02,19:42:36,429,4,433,ok,,\nBasic-2,10.73,19:42:37,429,4,433,ok,,\nBasic-2,11.43,19:42:37,427,6,433,ok,,\nBasic-2,12.13,19:42:38,432,1,433,ok,,\nBasic-2,12.84,19:42:39,435,-2,433,ok,,\nBasic-2,13.54,19:42:39,431,2,433,ok,,\nBasic-2,14.05,,431,,,,meal,Lemon added (\"meal\")\nBasic-2,14.25,19:42:40,425,8,433,ok,,\nBasic-2,14.95,19:42:41,419,14,433,ok,,\nBasic-2,15.66,19:42:41,411,22,433,ok,,\nBasic-2,16.36,19:42:42,397,36,433,ok,,\nBasic-2,17.06,19:42:43,385,48,433,ok,,\nBasic-2,17.78,19:42:44,376,57,433,spike,,\nBasic-2,17.78,,376,,,,dose,dose 1 | Dose #1 at reading 376\nBasic-2,18.94,19:42:45,367,66,433,mix,,\nBasic-2,19.94,19:42:46,354,79,433,mix,,\nBasic-2,20.95,19:42:47,342,91,433,mix,,\nBasic-2,21.95,19:42:48,331,102,433,mix,,\nBasic-2,22.96,19:42:49,321,112,433,mix,,\nBasic-2,23.96,19:42:50,313,120,433,mix,,\nBasic-2,24.97,19:42:51,308,125,433,mix,,\nBasic-2,25.97,19:42:52,304,129,433,mix,,\nBasic-2,26.97,19:42:53,304,129,433,mix,,\nBasic-2,27.98,19:42:54,303,130,433,mix,,\nBasic-2,28.98,19:42:55,302,131,433,mix,,\nBasic-2,29.99,19:42:56,303,130,433,mix,,\nBasic-2,30.99,19:42:57,305,128,433,mix,,\nBasic-2,32.00,19:42:58,305,128,433,mix,,\nBasic-2,33.00,19:42:59,303,130,433,mix,,\nBasic-2,34.56,19:43:00,301,132,433,spike,,\nBasic-2,34.56,,301,,,,dose,dose 2 | Dose #2 at reading 301\nBasic-2,35.71,19:43:02,299,134,433,mix,,\nBasic-2,36.72,19:43:03,334,99,433,mix,,\nBasic-2,37.72,19:43:04,352,81,433,mix,,\nBasic-2,38.73,19:43:05,363,70,433,mix,,\nBasic-2,39.73,19:43:06,370,63,433,mix,,\nBasic-2,40.73,19:43:07,376,57,433,mix,,\nBasic-2,41.74,19:43:08,380,53,433,mix,,\nBasic-2,42.74,19:43:09,385,48,433,mix,,\nBasic-2,43.75,19:43:10,388,45,433,mix,,\nBasic-2,44.75,19:43:11,390,43,433,mix,,\nBasic-2,45.76,19:43:12,393,40,433,mix,,\nBasic-2,46.76,19:43:13,395,38,433,mix,,\nBasic-2,47.77,19:43:14,398,35,433,mix,,\nBasic-2,48.77,19:43:15,399,34,433,mix,,\nBasic-2,49.78,19:43:16,402,31,433,mix,,\nBasic-2,51.35,19:43:17,405,28,433,ok,,\nBasic-2,51.35,,405,,,,back,Back to normal after 2 dose(s)\nBasic-2,52.02,19:43:18,406,27,433,ok,,\nBasic-2,52.72,19:43:19,405,28,433,ok,,\nBasic-2,53.43,19:43:19,407,26,433,ok,,\nBasic-2,54.13,19:43:20,406,27,433,ok,,\nBasic-2,54.84,19:43:21,408,25,433,ok,,\nBasic-2,55.54,19:43:21,409,24,433,ok,,\nBasic-2,56.25,19:43:22,408,25,433,ok,,\nBasic-2,56.95,19:43:23,410,23,433,ok,,\nBasic-2,57.66,19:43:23,409,24,433,ok,,\nBasic-2,58.36,19:43:24,409,24,433,ok,,\nBasic-2,59.06,19:43:25,408,25,433,ok,,\nBasic-2,59.77,19:43:26,409,24,433,ok,,\nBasic-2,60.47,19:43:26,408,25,433,ok,,\nBasic-2,61.17,19:43:27,408,25,433,ok,,\nBasic-2,61.88,19:43:28,407,26,433,ok,,\nBasic-2,62.58,19:43:28,407,26,433,ok,,\nBasic-2,63.29,19:43:29,409,24,433,ok,,\nBasic-2,63.99,19:43:30,408,25,433,ok,,\nBasic-2,64.70,19:43:30,409,24,433,ok,,\nBasic-2,65.40,19:43:31,410,23,433,ok,,\nBasic-2,66.10,19:43:32,410,23,433,ok,,\nBasic-2,66.81,19:43:33,410,23,433,ok,,\nBasic-2,67.51,19:43:33,410,23,433,ok,,\nBasic-2,68.22,19:43:34,410,23,433,ok,,\nBasic-2,68.92,19:43:35,410,23,433,ok,,\nBasic-2,69.63,19:43:35,412,21,433,ok,,\nBasic-2,70.33,19:43:36,410,23,433,ok,,\nBasic-2,71.03,19:43:37,411,22,433,ok,,\nBasic-2,71.74,19:43:38,411,22,433,ok,,\nBasic-2,72.44,19:43:38,411,22,433,ok,,\nBasic-2,73.15,19:43:39,413,20,433,ok,,\nBasic-2,73.85,19:43:40,413,20,433,ok,,\nBasic-2,74.55,19:43:40,412,21,433,ok,,\nBasic-2,75.26,19:43:41,413,20,433,ok,,\nBasic-2,75.96,19:43:42,413,20,433,ok,,\nBasic-2,76.67,19:43:42,413,20,433,ok,,\nBasic-2,77.37,19:43:43,414,19,433,ok,,\nBasic-2,78.07,19:43:44,414,19,433,ok,,\nBasic-2,78.78,19:43:45,415,18,433,ok,,\nBasic-2,79.48,19:43:45,415,18,433,ok,,\nBasic-2,80.19,19:43:46,415,18,433,ok,,\nBasic-2,80.89,19:43:47,416,17,433,ok,,\nBasic-2,81.59,19:43:47,415,18,433,ok,,\nBasic-2,82.30,19:43:48,415,18,433,ok,,\nBasic-2,83.00,19:43:49,416,17,433,ok,,\nBasic-2,83.52,,416,,,,end,Run ended"}];
+const $ = id => document.getElementById(id);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+/* ============================================================
+   1. THE TWIN MODEL
+   Acid "excess" E (counts below normal) is what the probe sees.
+   - Meal: lemon arrives = part instantly + rest over tauMeal seconds
+   - Dose: each pump-second removes D counts of acid over tauDose s
+   - CO2 floor: while neutralising, the water can't come back closer
+     than `floor` counts to normal (dissolved CO2 keeps it acidic)
+   - Too much base: E goes below the floor toward "basic" (overshoot),
+     limited to -OVER_MAX
+   - Probe delay: the probe follows E with a lag of tauProbe s
+   ============================================================ */
+const DT = 0.1, OVER_MAX = 60;
+const P = { D:105.7, tauDose:0.51, fastFrac:0.334, tauMeal:2.29, floor:26.6, tauProbe:4.79 };
+const PINFO = {
+  D:        ['Base strength', 'How far 1 second of pumping lowers the acid shift (counts). Like insulin sensitivity.'],
+  tauDose:  ['Dose action time (s)', 'How quickly the pumped base mixes in.'],
+  fastFrac: ['Fast part of meal', 'Fraction of the lemon that reaches the probe almost at once (0–1).'],
+  tauMeal:  ['Meal spread time (s)', 'How long the rest of the lemon takes to spread to the probe.'],
+  floor:    ['CO₂ floor (counts)', 'Closest to normal the water gets quickly after neutralising – dissolved CO₂ keeps it slightly acidic.'],
+  tauProbe: ['Probe delay (s)', 'How slowly the pH probe catches up with the water.'],
+};
+
+function twinE(meal, rem, dosed, p){
+  if (!dosed) return meal;
+  const fl = Math.min(p.floor, meal);
+  if (rem <= meal) return Math.max(meal - rem, fl);
+  return Math.max(fl - (rem - meal), -OVER_MAX);
+}
+function mealAt(dt, M, p){ return dt<=0 ? 0 : M*(p.fastFrac + (1-p.fastFrac)*(1-Math.exp(-dt/p.tauMeal))); }
+
+// Replay recorded doses: returns twin curve [ {t, shift} ]
+function simulateRecorded(p, M, tm, doses, T){
+  const out=[]; let y=0;
+  for (let t=0; t<=T; t+=DT){
+    let rem=0, dosed=false;
+    for (const d of doses){ if (t>d.t){ dosed=true; rem += p.D*d.s*(1-Math.exp(-(t-d.t)/p.tauDose)); } }
+    const E = twinE(mealAt(t-tm,M,p), rem, dosed, p);
+    y += (E-y)*DT/p.tauProbe; out.push({t, shift:y});
+  }
+  return out;
+}
+
+// Closed loop: twin + a controller that behaves like the Arduino sketch
+function simulateControl(p, M, ctrl, T=150, tm=10){
+  const out=[], doses=[]; let y=0, next=0, hist=[], spikeMs=0, inSpike=false;
+  for (let t=0; t<=T; t+=DT){
+    let rem=0; for (const d of doses) if (t>d.t) rem += p.D*d.s*(1-Math.exp(-(t-d.t)/p.tauDose));
+    y += (twinE(mealAt(t-tm,M,p), rem, doses.length>0, p)-y)*DT/p.tauProbe;
+    out.push({t, shift:y});
+    if (t >= next){
+      hist.push({t, s:y}); hist = hist.filter(h=>h.t >= t-2.1);
+      let ms = ctrl.decide(y, hist);
+      if (ms>0 && spikeMs + ms > 6000) ms = Math.max(0, 6000 - spikeMs);    // safety cap per spike
+      if (ms>0){ doses.push({t, s:ms/1000}); spikeMs += ms; inSpike=true; next = t + ms/1000 + ctrl.mix + 0.5; hist=[]; }
+      else { if (inSpike && y < 50) { inSpike=false; spikeMs=0; } next = t + 0.7; }
+    }
+  }
+  const after = out.filter(o=>o.t>tm);
+  return { curve:out, doses,
+    peak: Math.max(...after.map(o=>o.shift)), low: Math.min(...after.map(o=>o.shift)),
+    above: after.filter(o=>o.shift>50).length*DT,
+    tir: 100*after.filter(o=>Math.abs(o.shift)<=35).length/after.length,
+    pump: doses.reduce((a,d)=>a+d.s,0), n: doses.length };
+}
+
+function basicCtrl(alarm, doseMs, mix){ return { mix, decide:(s)=> s>alarm ? doseMs : 0 }; }
+function predictiveCtrl(o, p){
+  return { mix:o.mix, decide:(s, hist)=>{
+    const slope = hist.length>1 ? (hist[hist.length-1].s - hist[0].s)/Math.max(hist[hist.length-1].t - hist[0].t, 0.1) : 0;
+    if (!((s>o.meal && slope>o.fall) || s>o.corr)) return 0;
+    const pred = s + Math.max(slope,0)*o.look;           // where the reading is heading
+    const need = (pred - o.target)/p.D*1000;             // ms of pumping the twin says is needed
+    return need < 150 ? 0 : Math.min(o.max, Math.max(200, need));
+  }};
+}
+
+/* ============================================================
+   2. RUNS: reading the dashboard's CSV files
+   ============================================================ */
+const runs = [];
+function parseCSV(text, name){
+  let doseMs = 1000; const pts=[], doses=[]; let meal=null;
+  text.split(/\r?\n/).forEach(line=>{
+    const c=line.split(',');
+    if (c[0]==='# settings'){ const m=line.match(/dose_ms=(\d+)/); if(m) doseMs=+m[1]; return; }
+    if (c.length<8 || c[0]==='run' || c[0].startsWith('#')) return;
+    const t=+c[1];
+    if (c[7]==='dose'){ const m=(c[8]||'').match(/\((\d+) ms\)/); doses.push({t, s:(m?+m[1]:doseMs)/1000}); }
+    else if (c[7]==='meal' && meal===null) meal=t;
+    else if (!c[7] && c[5]!=='') pts.push({t, reading:+c[3], normal:+c[5]});
+  });
+  const normal = pts.length ? pts[pts.length-1].normal : 0;
+  pts.forEach(p=>p.shift = normal - p.reading);
+  // meal time: detect the start of the drop ourselves (more reliable than a hand-pressed button)
+  const det = detectMeal(pts);
+  if (det!==null && (meal===null || (doses.length && meal>doses[0].t) || Math.abs(meal-det)>3)) meal = det;
+  return { name, pts, doses, meal, normal, use:true, M:250, rmse:null };
+}
+function detectMeal(pts){
+  if (pts.length<12) return null;
+  const base = median(pts.slice(0,10).map(p=>p.reading));
+  const i = pts.findIndex(p=>p.reading < base-8);
+  if (i<1) return null;
+  let k=i; while (k>0 && pts[k-1].reading < base-2) k--;
+  return pts[Math.max(0,k-1)].t;
+}
+const median = a => { const s=[...a].sort((x,y)=>x-y); return s[Math.floor(s.length/2)]; };
+
+function runError(p, r, M){
+  const T = r.pts[r.pts.length-1].t + 1;
+  const sim = simulateRecorded(p, M, r.meal, r.doses, T);
+  let se=0, n=0;
+  for (const q of r.pts){ if (q.t < r.meal-3) continue; const i=Math.min(sim.length-1, Math.round(q.t/DT)); se += (sim[i].shift-q.shift)**2; n++; }
+  return n ? se/n : 0;
+}
+
+/* ============================================================
+   3. LEARNING THE TWIN (Nelder-Mead search - tries parameter
+      combinations until the twin's curve matches the real dots)
+   ============================================================ */
+const KEYS = ['D','tauDose','fastFrac','tauMeal','floor','tauProbe'];
+function valid(p){ return p.D>10 && p.D<400 && p.tauDose>0.05 && p.tauDose<30 && p.fastFrac>=0 && p.fastFrac<=1 && p.tauMeal>0.1 && p.tauMeal<60 && p.floor>=0 && p.floor<80 && p.tauProbe>0.2 && p.tauProbe<30; }
+function nelderMead(f, x0, iters=1500){
+  const n=x0.length; let S=[x0]; for(let i=0;i<n;i++){ const x=x0.slice(); x[i] = x[i]!==0 ? x[i]*1.15 : 0.1; S.push(x); }
+  let F=S.map(f);
+  for (let it=0; it<iters; it++){
+    const idx=[...S.keys()].sort((a,b)=>F[a]-F[b]); S=idx.map(i=>S[i]); F=idx.map(i=>F[i]);
+    const c=new Array(n).fill(0); for(let i=0;i<n;i++) for(let j=0;j<n;j++) c[j]+=S[i][j]/n;
+    const ref=c.map((v,j)=>v+(v-S[n][j])), fr=f(ref);
+    if (fr<F[0]){ const ex=c.map((v,j)=>v+2*(v-S[n][j])), fe=f(ex); if(fe<fr){S[n]=ex;F[n]=fe;} else {S[n]=ref;F[n]=fr;} }
+    else if (fr<F[n-1]){ S[n]=ref; F[n]=fr; }
+    else { const co=c.map((v,j)=>v+0.5*(S[n][j]-v)), fc=f(co);
+      if (fc<F[n]){ S[n]=co; F[n]=fc; } else { for(let i=1;i<=n;i++){ S[i]=S[i].map((v,j)=>S[0][j]+0.5*(v-S[0][j])); F[i]=f(S[i]); } } }
+  }
+  const b=F.indexOf(Math.min(...F)); return {x:S[b], f:F[b]};
+}
+function fitMealsOnly(){ runs.forEach(r=>{ r.M = nelderMead(m=>m[0]>0?runError(P,r,m[0]):1e9,[r.M],120).x[0]; r.rmse=Math.sqrt(runError(P,r,r.M)); }); }
+
+$('btnFit').onclick = () => {
+  const used = runs.filter(r=>r.use); if (!used.length) return;
+  $('status').textContent='Learning… (a few seconds)';
+  setTimeout(()=>{
+    const x0 = KEYS.map(k=>P[k]).concat(used.map(r=>r.M));
+    const toP = x => Object.fromEntries(KEYS.map((k,i)=>[k,x[i]]));
+    const loss = x => { const p=toP(x); if(!valid(p)) return 1e9; let L=0; used.forEach((r,i)=>{ if(x[6+i]<=0) L+=1e9; else L+=runError(p,r,x[6+i]); }); return L; };
+    let best = nelderMead(loss, x0, 2500); best = nelderMead(loss, best.x, 2500);
+    Object.assign(P, toP(best.x)); used.forEach((r,i)=>r.M=best.x[6+i]);
+    fitMealsOnly();                                         // unticked runs: only their meal size is fitted (a fair test)
+    $('status').textContent = 'Learned from '+used.length+' run(s). Average twin error: '+Math.sqrt(best.f/used.length).toFixed(1)+' counts (≈ '+(Math.sqrt(best.f/used.length)/50).toFixed(2)+' pH)';
+    renderAll();
+  }, 30);
+};
+
+/* ============================================================
+   4. DRAWING
+   ============================================================ */
+function niceStep(raw){ const p=Math.pow(10,Math.floor(Math.log10(raw||1))); const f=raw/p; return (f<=1?1:f<=2?2:f<=5?5:10)*p; }
+function fmtT(s){ s=Math.max(0,Math.round(s)); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); }
+// series: [{pts:[{t,v}], color, width, dots}], marks: [{t,color,label,dashed}], hlines:[{v,color,label}], band:[lo,hi]
+function plot(canvas, o, size){
+  const dpr=size?1:(window.devicePixelRatio||1), W=size?size.w:canvas.clientWidth, H=size?size.h:canvas.clientHeight;
+  canvas.width=W*dpr; canvas.height=H*dpr; const g=canvas.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0);
+  const top=o.top||12, L=52, R=14, B=34, pw=W-L-R, ph=H-top-B;
+  g.fillStyle=css('--card'); g.fillRect(0,0,W,H);
+  let ymin=Infinity, ymax=-Infinity, tmax=10;
+  o.series.forEach(s=>s.pts.forEach(p=>{ ymin=Math.min(ymin,p.v); ymax=Math.max(ymax,p.v); tmax=Math.max(tmax,p.t); }));
+  (o.hlines||[]).forEach(h=>{ ymin=Math.min(ymin,h.v); ymax=Math.max(ymax,h.v); });
+  if (o.band){ ymin=Math.min(ymin,o.band[0]); ymax=Math.max(ymax,o.band[1]); }
+  const pad=Math.max(5,(ymax-ymin)*.06); ymin-=pad; ymax+=pad;
+  const X=t=>L+pw*t/tmax, Y=v=>top+ph*(1-(v-ymin)/(ymax-ymin));
+  g.strokeStyle=css('--line'); g.fillStyle=css('--muted'); g.font='12px sans-serif'; g.lineWidth=1;
+  const ys=niceStep((ymax-ymin)/6); g.textAlign='right'; g.textBaseline='middle';
+  for(let v=Math.ceil(ymin/ys)*ys; v<=ymax; v+=ys){ g.beginPath(); g.moveTo(L,Y(v)); g.lineTo(W-R,Y(v)); g.stroke(); g.fillText(Math.round(v),L-6,Y(v)); }
+  const xs=niceStep(tmax/8); g.textAlign='center'; g.textBaseline='top';
+  for(let t=0;t<=tmax;t+=xs){ g.beginPath(); g.moveTo(X(t),top); g.lineTo(X(t),top+ph); g.stroke(); g.fillText(fmtT(t),X(t),top+ph+6); }
+  g.save(); g.translate(14,top+ph/2); g.rotate(-Math.PI/2); g.textAlign='center'; g.fillText(o.ylabel||'Sensor reading (lower = more acidic)',0,0); g.restore();
+  if (o.band){ g.fillStyle=css('--band'); g.fillRect(L,Y(o.band[1]),pw,Y(o.band[0])-Y(o.band[1])); }
+  (o.hlines||[]).forEach(h=>{ g.strokeStyle=h.color; g.setLineDash([6,4]); g.lineWidth=1.5; g.beginPath(); g.moveTo(L,Y(h.v)); g.lineTo(W-R,Y(h.v)); g.stroke(); g.setLineDash([]); g.fillStyle=h.color; g.font='bold 11px sans-serif'; g.textAlign='right'; g.textBaseline='bottom'; g.fillText(h.label,W-R-4,Y(h.v)-2); });
+  (o.marks||[]).forEach(m=>{ g.strokeStyle=m.color; g.lineWidth=m.dashed?1.5:2; g.setLineDash(m.dashed?[3,3]:[]); g.beginPath(); g.moveTo(X(m.t),top); g.lineTo(X(m.t),top+ph); g.stroke(); g.setLineDash([]); g.fillStyle=m.color; g.font='bold 11px sans-serif'; g.textAlign='left'; g.textBaseline='top'; g.fillText(m.label||'',X(m.t)+3,top+2+(m.row||0)*13); });
+  o.series.forEach(s=>{
+    g.strokeStyle=s.color; g.fillStyle=s.color; g.lineWidth=s.width||2;
+    if (s.dots){ s.pts.forEach(p=>{ g.beginPath(); g.arc(X(p.t),Y(p.v),2.2,0,7); g.fill(); }); }
+    else { g.beginPath(); s.pts.forEach((p,i)=> i?g.lineTo(X(p.t),Y(p.v)):g.moveTo(X(p.t),Y(p.v))); g.stroke(); }
+  });
+  if (o.title){ g.fillStyle=css('--ink'); g.font='bold 22px sans-serif'; g.textAlign='left'; g.textBaseline='top'; g.fillText(o.title,L,14); g.font='15px sans-serif'; g.fillStyle=css('--muted'); g.fillText(o.subtitle||'',L,46); }
+}
+function savePNG(drawFn, name){ const c=document.createElement('canvas'); drawFn(c,{w:1400,h:760}); c.toBlob(b=>{ const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=name; a.click(); }); }
+
+/* ============================================================
+   5. RENDERING THE PAGE
+   ============================================================ */
+function renderParams(){
+  $('params').innerHTML='';
+  KEYS.forEach(k=>{
+    const d=document.createElement('div'); d.className='param';
+    d.innerHTML=`<div class="k">${PINFO[k][0]}</div><div class="m">${PINFO[k][1]}</div>`;
+    const inp=document.createElement('input'); inp.type='number'; inp.step='any'; inp.value=(+P[k]).toFixed(k==='D'||k==='floor'?1:2);
+    inp.onchange=()=>{ P[k]=+inp.value; fitMealsOnly(); renderAll(false); };
+    d.appendChild(inp); $('params').appendChild(d);
+  });
+}
+function renderRuns(){
+  const tb=$('runTable').querySelector('tbody'); tb.innerHTML='';
+  runs.forEach((r,i)=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td><input type="checkbox" ${r.use?'checked':''}></td><td>${r.name}</td><td class="num">${r.normal}</td><td class="num">${r.meal===null?'–':fmtT(r.meal)}</td>
+      <td class="num">${r.doses.length} (${r.doses.reduce((a,d)=>a+d.s,0).toFixed(1)} s)</td><td class="num">${Math.round(r.M)}</td>
+      <td class="num">${r.rmse===null?'–':r.rmse.toFixed(1)+' counts'}${r.use?'':' <span class="sub">(not used for learning = prediction test)</span>'}</td>`;
+    tr.querySelector('input').onchange=e=>{ r.use=e.target.checked; renderRuns(); };
+    tb.appendChild(tr);
+  });
+  const sel=$('selRun'), cur=sel.value; sel.innerHTML=runs.map((r,i)=>`<option value="${i}">${r.name}</option>`).join(''); if(cur) sel.value=cur;
+  const sm=$('selMeal'), cm=sm.value; sm.innerHTML='<option value="custom">Custom size</option>'+runs.map((r,i)=>`<option value="${i}">Same meal as ${r.name}</option>`).join(''); sm.value = cm || (runs.length?'0':'custom');
+}
+function fitDrawOpts(r){
+  const T=r.pts[r.pts.length-1].t+1, sim=simulateRecorded(P,r.M,r.meal,r.doses,T);
+  return { series:[ {pts:r.pts.map(p=>({t:p.t,v:p.reading})), color:css('--blue'), dots:true},
+                    {pts:sim.filter((_,i)=>i%3===0).map(s=>({t:s.t,v:r.normal-s.shift})), color:css('--red'), width:2.5} ],
+           marks:[{t:r.meal,color:css('--purple'),label:'Meal',dashed:true}].concat(r.doses.map((d,i)=>({t:d.t,color:css('--orange'),label:'D'+(i+1)}))),
+           hlines:[{v:r.normal,color:css('--green'),label:'Normal '+r.normal}] };
+}
+function renderFit(){
+  const r=runs[+$('selRun').value]; if(!r) return; plot($('cFit'), fitDrawOpts(r));
+}
+function ctrls(){
+  const A=basicCtrl(+$('aAlarm').value, +$('aDose').value, +$('aMix').value);
+  const B=predictiveCtrl({meal:+$('bMeal').value, fall:+$('bFall').value, corr:+$('bCorr').value, look:+$('bLook').value, target:+$('bTarget').value, max:+$('bMax').value, mix:+$('bMix').value}, P);
+  return {A,B};
+}
+function whatDrawOpts(){
+  const {A,B}=ctrls(), M=+$('mealSize').value, ra=simulateControl(P,M,A), rb=simulateControl(P,M,B), N=440;
+  const toPts = r => r.curve.filter((_,i)=>i%3===0).map(c=>({t:c.t,v:N-c.shift}));
+  return { ra, rb, o:{ series:[{pts:toPts(ra),color:css('--orange'),width:2.5},{pts:toPts(rb),color:css('--teal'),width:2.5}],
+    marks:[{t:10,color:css('--purple'),label:'Meal',dashed:true}].concat(ra.doses.map(d=>({t:d.t,color:css('--orange'),label:'A'}))).concat(rb.doses.map(d=>({t:d.t,color:css('--teal'),label:'B',row:1}))),
+    hlines:[{v:N,color:css('--green'),label:'Normal'},{v:N-50,color:css('--red'),label:'Alarm (50)'}], band:[N-35,N+35] } };
+}
+function metricRow(name, r, cls){
+  const b = v => v>0.5 ? 'bad':'good';
+  return `<tr><td style="color:var(${cls});font-weight:600">${name}</td><td class="num">${Math.round(r.peak)}</td><td class="num ${b(r.above)}">${r.above.toFixed(1)} s</td>
+          <td class="num">${r.tir.toFixed(0)} %</td><td class="num ${r.low<-35?'bad':''}">${r.low<-35?'YES ('+Math.round(r.low)+')':'no'}</td><td class="num">${r.pump.toFixed(1)} s</td><td class="num">${r.n}</td></tr>`;
+}
+const HEAD = '<tr><th>Controller</th><th>Worst shift</th><th>Time above alarm</th><th>In range ±35</th><th>Overshoot (too basic)</th><th>Pump time</th><th>Doses</th></tr>';
+function renderWhat(){
+  const sm=$('selMeal').value; if (sm!=='custom' && runs[+sm]) $('mealSize').value=Math.round(runs[+sm].M);
+  const {ra,rb,o}=whatDrawOpts(); plot($('cWhat'), o);
+  $('whatTable').innerHTML = HEAD + metricRow('A · Basic',ra,'--orange') + metricRow('B · Twin-predictive',rb,'--teal');
+}
+function renderStress(){
+  const {A,B}=ctrls(), meals=[['Small meal',120],['Standard meal',250],['Large meal',350]];
+  let h='<tr><th>Meal</th><th>Controller</th><th>Worst shift</th><th>Time above alarm</th><th>In range ±35</th><th>Overshoot</th><th>Pump time</th><th>Doses</th></tr>';
+  meals.forEach(([n,M])=>{ [['A · Basic',A,'--orange'],['B · Twin-predictive',B,'--teal']].forEach(([cn,c,cl],j)=>{
+    const r=simulateControl(P,M,c); h+= metricRow(cn,r,cl).replace('<tr>', `<tr><td>${j?'':n+' ('+M+')'}</td>`); }); });
+  $('stressTable').innerHTML=h;
+}
+function renderAll(withParams=true){ if(withParams) renderParams(); renderRuns(); renderFit(); renderWhat(); renderStress(); }
+
+$('selRun').onchange=renderFit;
+$('selMeal').onchange=renderWhat;
+['mealSize','aAlarm','aDose','aMix','bMeal','bFall','bCorr','bLook','bTarget','bMax','bMix'].forEach(id=>$(id).oninput=()=>{ if(id==='mealSize') $('selMeal').value='custom'; renderWhat(); renderStress(); });
+$('btnAdd').onclick=()=>$('fileIn').click();
+$('fileIn').onchange=async e=>{ for (const f of e.target.files){ const r=parseCSV(await f.text(), f.name.replace(/\.csv$/,'')); if(r.pts.length && r.meal!==null) runs.push(r); else alert(f.name+': no meal found in this run'); } e.target.value=''; fitMealsOnly(); renderAll(); };
+$('pngFit').onclick=()=>{ const r=runs[+$('selRun').value]; savePNG((c,s)=>plot(c,Object.assign(fitDrawOpts(r),{top:80,title:'Real run vs digital twin: '+r.name,subtitle:'Dots = real sensor readings · red line = twin replaying the same meal and doses · twin error '+(r.rmse||0).toFixed(1)+' counts'}),s),'twin_fit_'+r.name+'.png'); };
+$('pngWhat').onclick=()=>{ savePNG((c,s)=>{ const {ra,rb,o}=whatDrawOpts(); plot(c,Object.assign(o,{top:80,title:'What-if replay: meal size '+$('mealSize').value,subtitle:`A Basic: worst ${Math.round(ra.peak)}, ${ra.above.toFixed(0)} s above alarm   ·   B Twin-predictive: worst ${Math.round(rb.peak)}, ${rb.above.toFixed(0)} s above alarm`}),s); },'twin_whatif.png'); };
+
+$('btnOpt').onclick=()=>{
+  $('optStatus').textContent='Searching…';
+  setTimeout(()=>{
+    let best=null;
+    for (const meal of [25,30,35]) for (const look of [6,8,10,12]) for (const target of [20,25,30]) for (const mix of [5,8,12]){
+      const c=predictiveCtrl({meal, fall:+$('bFall').value, corr:+$('bCorr').value, look, target, max:+$('bMax').value, mix}, P);
+      let score=0; for (const M of [120,250,350]){ const r=simulateControl(P,M,c); score += r.above + 3*Math.max(0,-r.low-35) + 0.5*r.pump; }
+      if (!best || score<best.score) best={score, meal, look, target, mix};
+    }
+    $('bMeal').value=best.meal; $('bLook').value=best.look; $('bTarget').value=best.target; $('bMix').value=best.mix;
+    $('optStatus').textContent=`Best found: meal trigger ${best.meal}, look-ahead ${best.look} s, target ${best.target}, mix ${best.mix} s (copied into B).`;
+    renderWhat(); renderStress();
+  },30);
+};
+window.addEventListener('resize',()=>{ renderFit(); renderWhat(); });
+
+// start-up: load the built-in runs and fit only their meal sizes
+BUILTIN.forEach(b=>{ const r=parseCSV(b.csv,b.name); if(r.pts.length) runs.push(r); });
+fitMealsOnly(); renderAll();
+window.__twin = {P, runs, simulateControl, predictiveCtrl, basicCtrl};
+</script>
+</body>
+</html>
